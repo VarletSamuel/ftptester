@@ -1,0 +1,13 @@
+# Application requirements
+I want an application that connects with my bike, powermeter and heart rate.
+The connection can be over bluethooth or ANT+ depending on the devices I have. 
+The application should be able to read data from the powermeter and heart rate monitor in real-time, display it on the screen, and log the data for later analysis. 
+The main goal is to do FTP testing with multiple people at the same time, so the application should support multiple users and allow you to compare their performance.
+
+It should also allow you to set training zones based on your heart rate and power output, and provide feedback during your workouts. 
+Additionally, it would be great if the app could sync with popular fitness platforms like Strava or TrainingPeaks for easy sharing of your workout data.
+
+Please desgin an user interface first.
+In a second phase, draft a data model to keep track of participants an their performance metrics.
+Write the middleware to conect frontend with backend and communicate with the devices. 
+Finally, implement the backend to handle data storage, user management, and integration with external platforms.

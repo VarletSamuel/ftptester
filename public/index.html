@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FTP Tester — No Limit Team</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Roboto:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="icon" href="/assets/nlt-logo.png" />
+    <link rel="stylesheet" href="/css/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img class="logo" src="/assets/nlt-logo.png" alt="No Limit Team" />
+        <div class="brand-text">
+          <h1>FTP Tester</h1>
+          <p class="tagline">Group threshold testing over Bluetooth &amp; ANT+</p>
+        </div>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-view="session">Test session</button>
+        <button class="tab" data-view="athletes">Athletes</button>
+        <button class="tab" data-view="history">History</button>
+        <button class="tab" data-view="integrations">Sharing</button>
+      </nav>
+      <div class="conn" id="wsStatus" title="Server connection">●</div>
+    </header>
+
+    <main>
+      <!-- ============================ SESSION ============================ -->
+      <section class="view active" id="view-session">
+        <div class="session-setup" id="sessionSetup">
+          <div class="card">
+            <h2>Start a test session</h2>
+            <div class="form-row">
+              <label>Session name<input id="sessName" placeholder="Tuesday threshold" /></label>
+              <label>Protocol<select id="sessProtocol"></select></label>
+            </div>
+            <p class="hint" id="protocolHint"></p>
+            <button class="btn primary" id="createSessionBtn">Create session</button>
+          </div>
+
+          <div class="card">
+            <h2>Open sessions</h2>
+            <ul class="session-list" id="sessionList"></ul>
+          </div>
+        </div>
+
+        <div class="session-live hidden" id="sessionLive">
+          <div class="session-head">
+            <div>
+              <h2 id="liveName">Session</h2>
+              <span class="pill" id="liveProtocol"></span>
+              <span class="pill state" id="liveState"></span>
+              <span class="timer" id="liveTimer">0:00</span>
+            </div>
+            <div class="session-actions">
+              <select id="addParticipant"><option value="">+ Add athlete…</option></select>
+              <button class="btn" id="startBtn">Start test</button>
+              <button class="btn danger" id="finishBtn" disabled>Finish</button>
+              <button class="btn ghost" id="leaveSessionBtn">Close</button>
+            </div>
+          </div>
+
+          <div class="leaderboard" id="leaderboard"></div>
+          <div class="participants" id="participants"></div>
+
+          <div class="card chart-card">
+            <h3>Live power</h3>
+            <canvas id="powerChart" height="220"></canvas>
+          </div>
+
+          <div class="results hidden" id="results">
+            <h2>Results</h2>
+            <div id="resultsBody"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ ATHLETES =========================== -->
+      <section class="view" id="view-athletes">
+        <div class="athletes-grid">
+          <div class="card">
+            <h2 id="athleteFormTitle">New athlete</h2>
+            <input type="hidden" id="athleteId" />
+            <label>Name<input id="aName" placeholder="Jane Rider" /></label>
+            <div class="form-row">
+              <label>Weight (kg)<input id="aWeight" type="number" min="0" step="0.1" /></label>
+              <label>FTP (W)<input id="aFtp" type="number" min="0" /></label>
+            </div>
+            <div class="form-row">
+              <label>Max HR<input id="aMaxHr" type="number" min="0" /></label>
+              <label>Resting HR<input id="aRestHr" type="number" min="0" /></label>
+            </div>
+            <label>Email<input id="aEmail" type="email" placeholder="optional" /></label>
+            <div class="btn-row">
+              <button class="btn primary" id="saveAthleteBtn">Save athlete</button>
+              <button class="btn ghost hidden" id="cancelEditBtn">Cancel</button>
+            </div>
+            <div class="zones" id="athleteZones"></div>
+          </div>
+          <div class="card">
+            <h2>Athletes</h2>
+            <ul class="athlete-list" id="athleteList"></ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ HISTORY ============================ -->
+      <section class="view" id="view-history">
+        <div class="card">
+          <h2>Past tests</h2>
+          <div id="historyBody"></div>
+        </div>
+      </section>
+
+      <!-- ========================== INTEGRATIONS ========================= -->
+      <section class="view" id="view-integrations">
+        <div class="card">
+          <h2>Share &amp; sync</h2>
+          <p class="hint">Connect a platform to push finished tests, or export a standard TCX file that any app can import.</p>
+          <div class="integrations" id="integrations"></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast"></div>
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "ftp-tester",
+  "version": "1.0.0",
+  "description": "Multi-user cycling FTP testing app with real-time power/heart-rate telemetry over Bluetooth/ANT+.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}
