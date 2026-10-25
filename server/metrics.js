@@ -1,35 +1,9 @@
 // ---------------------------------------------------------------------------
-// Sports-science calculations: FTP protocols, training zones, and workout
+// Sports-science calculations: FTP adjustment factors, training zones and test
 // summaries. Kept free of I/O so it can be unit-reasoned and reused.
 // ---------------------------------------------------------------------------
 
-// FTP-test protocols. `estimateFtp` maps the best sustained effort of the
-// protocol's core interval to an FTP figure using the standard multipliers.
-export const PROTOCOLS = {
-  ftp20: {
-    id: 'ftp20',
-    name: '20-minute test',
-    // ~5 min blowout, 20 min all-out effort. FTP = 95% of the 20-min average.
-    coreSeconds: 20 * 60,
-    multiplier: 0.95,
-    description: 'All-out 20 minutes. FTP = 95% of average power.',
-  },
-  ftp8: {
-    id: 'ftp8',
-    name: '8-minute test',
-    coreSeconds: 8 * 60,
-    multiplier: 0.9,
-    description: 'All-out 8 minutes. FTP = 90% of average power.',
-  },
-  ramp: {
-    id: 'ramp',
-    name: 'Ramp test',
-    // FTP = 75% of best 1-minute power at exhaustion.
-    coreSeconds: 60,
-    multiplier: 0.75,
-    description: 'Step up until failure. FTP = 75% of best 1-minute power.',
-  },
-};
+import { settings } from './config.js';
 
 // Coggan power zones as a fraction of FTP.
 export const POWER_ZONES = [
@@ -42,15 +16,68 @@ export const POWER_ZONES = [
   { zone: 7, name: 'Neuromuscular', min: 1.5, max: Infinity, color: '#9b1fbf' },
 ];
 
-// Heart-rate zones as a fraction of max HR.
-export const HR_ZONES = [
-  { zone: 1, name: 'Recovery', min: 0, max: 0.6, color: '#7ea6ff' },
-  { zone: 2, name: 'Aerobic', min: 0.6, max: 0.7, color: '#4ec9b0' },
-  { zone: 3, name: 'Tempo', min: 0.7, max: 0.8, color: '#c9d14e' },
-  { zone: 4, name: 'Threshold', min: 0.8, max: 0.9, color: '#e6a23c' },
-  { zone: 5, name: 'Maximal', min: 0.9, max: Infinity, color: '#f56c6c' },
-];
+// Heart-rate zones "matching" the 7 power zones, as a fraction of LTHR. The
+// bounds come from config/settings.json (heartRate.zoneBoundsPctLthr).
+export function hrZoneDefs() {
+  const bounds = settings.heartRate.zoneBoundsPctLthr;
+  return POWER_ZONES.map((z, i) => ({
+    zone: z.zone,
+    name: z.name,
+    color: z.color,
+    min: i === 0 ? 0 : bounds[i - 1],
+    max: i === POWER_ZONES.length - 1 ? Infinity : bounds[i],
+  }));
+}
 
+// --- FTP adjustment factor for shortened tests -----------------------------
+// Linear interpolation over the configured [minutes, factor] table, clamped to
+// its ends. 20 min -> 0.95 and 8 min -> 0.90 are the established protocols.
+export function ftpFactor(minutes) {
+  const table = [...settings.ftpFactors].sort((a, b) => a[0] - b[0]);
+  if (minutes <= table[0][0]) return table[0][1];
+  if (minutes >= table.at(-1)[0]) return table.at(-1)[1];
+  for (let i = 1; i < table.length; i++) {
+    const [m1, f1] = table[i];
+    const [m0, f0] = table[i - 1];
+    if (minutes <= m1) return f0 + ((f1 - f0) * (minutes - m0)) / (m1 - m0);
+  }
+  return 1;
+}
+
+// Normalise a session's test configuration (minutes in, seconds + factor out).
+export function buildTestConfig(input = {}) {
+  const d = settings.test;
+  const clamp = (v, lo, hi, def) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+  };
+  const warmupMinutes = clamp(input.warmupMinutes, 0, 60, d.warmupMinutes);
+  const effortMinutes = clamp(input.effortMinutes, d.minEffortMinutes, d.maxEffortMinutes, d.effortMinutes);
+  const cooldownMinutes = clamp(input.cooldownMinutes, 0, 60, d.cooldownMinutes);
+  return {
+    warmupMinutes,
+    effortMinutes,
+    cooldownMinutes,
+    effortPercentFtp: clamp(input.effortPercentFtp, 30, 150, d.effortPercentFtp),
+    staggerSeconds: clamp(input.staggerSeconds, 0, 600, d.staggerSeconds),
+    warmupSec: Math.round(warmupMinutes * 60),
+    effortSec: Math.round(effortMinutes * 60),
+    cooldownSec: Math.round(cooldownMinutes * 60),
+    ftpFactor: Number(ftpFactor(effortMinutes).toFixed(4)),
+  };
+}
+
+// Phase for a rider `elapsedSec` after their own start.
+export function phaseAt(test, elapsedSec) {
+  if (elapsedSec < test.warmupSec) return { phase: 'warmup', remaining: test.warmupSec - elapsedSec };
+  const e = elapsedSec - test.warmupSec;
+  if (e < test.effortSec) return { phase: 'effort', remaining: test.effortSec - e };
+  const c = e - test.effortSec;
+  if (c < test.cooldownSec) return { phase: 'cooldown', remaining: test.cooldownSec - c };
+  return { phase: 'done', remaining: 0 };
+}
+
+// --- zones ------------------------------------------------------------------
 export function powerZones(ftp) {
   if (!ftp) return [];
   return POWER_ZONES.map((z) => ({
@@ -60,96 +87,123 @@ export function powerZones(ftp) {
   }));
 }
 
-export function hrZones(maxHr) {
-  if (!maxHr) return [];
-  return HR_ZONES.map((z) => ({
+// Resolve the heart-rate anchor: measured LTHR if known, otherwise estimated
+// from max HR using heartRate.lthrFractionOfMax.
+export function resolveLthr({ lthr, maxHr } = {}) {
+  if (lthr) return { lthr: Math.round(lthr), estimated: false };
+  if (maxHr) return { lthr: Math.round(maxHr * settings.heartRate.lthrFractionOfMax), estimated: true };
+  return { lthr: null, estimated: false };
+}
+
+export function hrZones(lthr, maxHr = null) {
+  if (!lthr) return [];
+  const cap = (v) => (maxHr ? Math.min(v, maxHr) : v);
+  return hrZoneDefs().map((z) => ({
     ...z,
-    lowBpm: Math.round(z.min * maxHr),
-    highBpm: z.max === Infinity ? null : Math.round(z.max * maxHr),
+    lowBpm: cap(Math.round(z.min * lthr)),
+    highBpm: z.max === Infinity ? (maxHr ?? null) : cap(Math.round(z.max * lthr)),
   }));
 }
 
-export function powerZoneFor(power, ftp) {
-  if (!ftp || !power) return null;
-  const frac = power / ftp;
-  return POWER_ZONES.find((z) => frac >= z.min && frac < z.max) || POWER_ZONES.at(-1);
+function zoneIndex(zones, frac) {
+  const i = zones.findIndex((z) => frac >= z.min && frac < z.max);
+  return i === -1 ? zones.length - 1 : i;
 }
 
-export function hrZoneFor(hr, maxHr) {
-  if (!maxHr || !hr) return null;
-  const frac = hr / maxHr;
-  return HR_ZONES.find((z) => frac >= z.min && frac < z.max) || HR_ZONES.at(-1);
-}
-
-// Best average power over any window of `windowSeconds` within the samples.
-// Samples carry `t` in ms and `power` in watts.
-export function bestAveragePower(samples, windowSeconds) {
-  const pts = samples.filter((s) => typeof s.power === 'number');
-  if (pts.length === 0) return 0;
-  const windowMs = windowSeconds * 1000;
-  let best = 0;
-  let start = 0;
-  let sum = 0;
-  // Sliding window over an irregular time series; average = area / duration.
-  for (let end = 0; end < pts.length; end++) {
-    while (end > start && pts[end].t - pts[start].t > windowMs) start++;
-    const span = Math.max(1, pts[end].t - pts[start].t);
-    let s = 0;
-    for (let i = start; i <= end; i++) s += pts[i].power;
-    const avg = s / (end - start + 1);
-    if (pts[end].t - pts[start].t >= windowMs * 0.9) best = Math.max(best, avg);
-  }
-  // Fallback: if the effort was shorter than the window, use the whole set.
-  if (best === 0) {
-    sum = pts.reduce((a, s) => a + s.power, 0);
-    best = sum / pts.length;
-  }
-  return Math.round(best);
-}
+// --- summary ----------------------------------------------------------------
+const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 
 // Normalized Power (Coggan): 4th-root of the mean of 30s-rolling-avg^4.
-export function normalizedPower(samples) {
-  const pts = samples.filter((s) => typeof s.power === 'number');
-  if (pts.length < 2) return 0;
-  const rolling = [];
-  const windowMs = 30 * 1000;
-  let start = 0;
-  for (let end = 0; end < pts.length; end++) {
-    while (pts[end].t - pts[start].t > windowMs) start++;
-    let s = 0;
-    for (let i = start; i <= end; i++) s += pts[i].power;
-    rolling.push(s / (end - start + 1));
+export function normalizedPower(powers) {
+  if (powers.length < 30) return Math.round(avg(powers));
+  let sum = 0;
+  let mean4 = 0;
+  let n = 0;
+  for (let i = 0; i < powers.length; i++) {
+    sum += powers[i];
+    if (i >= 30) sum -= powers[i - 30];
+    if (i >= 29) {
+      mean4 += (sum / 30) ** 4;
+      n++;
+    }
   }
-  const mean4 = rolling.reduce((a, p) => a + p ** 4, 0) / rolling.length;
-  return Math.round(mean4 ** 0.25);
+  return Math.round((mean4 / n) ** 0.25);
 }
 
-// Build a full result summary for a participant at the end of a session.
-export function summarize(samples, protocolId) {
-  const protocol = PROTOCOLS[protocolId] || PROTOCOLS.ftp20;
-  const powerPts = samples.filter((s) => typeof s.power === 'number');
-  const hrPts = samples.filter((s) => typeof s.hr === 'number' && s.hr > 0);
+// Build the per-rider test result. Samples are ~1 Hz, `t` in ms since the
+// rider's own start, so the effort window can be cut out exactly.
+export function summarize(samples, test, rider = {}) {
+  const effortStart = test.warmupSec * 1000;
+  const effortEnd = effortStart + test.effortSec * 1000;
+  const effort = samples.filter((s) => s.t >= effortStart && s.t < effortEnd);
+  const effortPower = effort.filter((s) => s.power != null).map((s) => s.power);
+  const effortHr = effort.filter((s) => s.hr > 0).map((s) => s.hr);
+  const allHr = samples.filter((s) => s.hr > 0).map((s) => s.hr);
 
-  const avgPower = powerPts.length
-    ? Math.round(powerPts.reduce((a, s) => a + s.power, 0) / powerPts.length)
-    : 0;
-  const maxPower = powerPts.length ? Math.max(...powerPts.map((s) => s.power)) : 0;
-  const avgHr = hrPts.length ? Math.round(hrPts.reduce((a, s) => a + s.hr, 0) / hrPts.length) : 0;
-  const maxHr = hrPts.length ? Math.max(...hrPts.map((s) => s.hr)) : 0;
+  const effortCompletion = test.effortSec ? Math.min(1, effort.length / test.effortSec) : 0;
+  const avgPower = Math.round(avg(effortPower));
+  const factor = test.ftpFactor;
+  const estimatedFtp = Math.round(avgPower * factor);
 
-  const coreAvg = bestAveragePower(samples, protocol.coreSeconds);
-  const estimatedFtp = Math.round(coreAvg * protocol.multiplier);
+  // LTHR ≈ average HR of the final part of the all-out effort (last 15 min, or
+  // the whole effort when it is shorter).
+  const tail = effort.slice(-15 * 60).filter((s) => s.hr > 0).map((s) => s.hr);
+  const measuredLthr = effortCompletion >= settings.test.minCompletionForProfileUpdate && tail.length >= 60
+    ? Math.round(avg(tail))
+    : null;
+  const maxHr = allHr.length ? Math.max(...allHr) : 0;
+  const hrAnchor = resolveLthr({ lthr: measuredLthr || rider.lthr, maxHr: Math.max(maxHr, rider.maxHr || 0) || null });
+
+  const pz = powerZones(estimatedFtp);
+  const hz = hrZones(hrAnchor.lthr, rider.maxHr || null);
+  const powerSecs = new Array(POWER_ZONES.length).fill(0);
+  const hrSecs = new Array(POWER_ZONES.length).fill(0);
+  let powerN = 0;
+  let hrN = 0;
+  for (const s of samples) {
+    if (estimatedFtp && s.power != null) {
+      powerSecs[zoneIndex(POWER_ZONES, s.power / estimatedFtp)]++;
+      powerN++;
+    }
+    if (hz.length && s.hr > 0) {
+      hrSecs[zoneIndex(hz, s.hr / hrAnchor.lthr)]++;
+      hrN++;
+    }
+  }
+
+  const zones = POWER_ZONES.map((z, i) => ({
+    zone: z.zone,
+    name: z.name,
+    color: z.color,
+    pctMin: z.min,
+    pctMax: z.max === Infinity ? null : z.max,
+    lowW: pz[i]?.lowW ?? null,
+    highW: pz[i]?.highW ?? null,
+    lowBpm: hz[i]?.lowBpm ?? null,
+    highBpm: hz[i]?.highBpm ?? null,
+    powerSeconds: powerSecs[i],
+    powerPct: powerN ? powerSecs[i] / powerN : 0,
+    hrSeconds: hrSecs[i],
+    hrPct: hrN ? hrSecs[i] / hrN : 0,
+  }));
 
   return {
-    protocol: protocol.id,
-    durationSec: powerPts.length ? Math.round((powerPts.at(-1).t - powerPts[0].t) / 1000) : 0,
+    effortMinutes: test.effortMinutes,
+    adjustmentFactor: factor,
+    effortCompletion: Number(effortCompletion.toFixed(3)),
+    durationSec: samples.length ? Math.round(samples.at(-1).t / 1000) : 0,
+    ftpBefore: rider.ftp ?? null,
     avgPower,
-    maxPower,
-    normalizedPower: normalizedPower(samples),
-    avgHr,
+    maxPower: effortPower.length ? Math.max(...effortPower) : 0,
+    normalizedPower: normalizedPower(effortPower),
+    avgHr: Math.round(avg(effortHr)),
     maxHr,
-    bestCoreAvgPower: coreAvg,
+    lthr: hrAnchor.lthr,
+    lthrEstimated: hrAnchor.estimated,
+    measuredLthr,
     estimatedFtp,
+    wattsPerKg: rider.weightKg && estimatedFtp ? Number((estimatedFtp / rider.weightKg).toFixed(2)) : null,
+    zones,
     sampleCount: samples.length,
   };
 }

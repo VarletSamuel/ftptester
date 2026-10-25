@@ -1,32 +1,41 @@
 // ---------------------------------------------------------------------------
 // Application controller. Orchestrates views, athlete management, the live
-// session (device connections + telemetry), results and integrations.
+// session (device pairing, per-rider cards, trainer control), reports and
+// integrations.
 // ---------------------------------------------------------------------------
 
 import { api } from './api.js';
 import { WsClient } from './ws.js';
-import { PowerMeter, HeartRateMonitor, SimulatedTrainer } from './devices.js';
-import { powerZoneFor, hrZoneFor, feedback, fmtDuration, POWER_ZONES, HR_ZONES } from './metrics.js';
+import { SmartTrainer, PowerMeter, HeartRateMonitor, SimulatedTrainer, bluetoothSupport } from './devices.js';
+import { RiderCard } from './riderCard.js';
+import { renderReport } from './report.js';
+import { hexA } from './charts.js';
+import { POWER_ZONES, configure, getSettings, ftpFactor, powerZones, hrZones, resolveLthr } from './metrics.js';
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 
+const PALETTE = ['#29abe2', '#e02020', '#61ce70', '#e6a23c', '#9b1fbf', '#d6336c'];
+const SEND_EVERY_MS = 250; // cap on raw readings forwarded per rider
+const CONTROL_REFRESH_MS = 15000; // re-send the trainer command now and then
+
 const state = {
   users: [],
-  protocols: [],
-  session: null, // current public session
+  session: null, // current public session snapshot
   editingUserId: null,
-  // Live device plumbing keyed by userId.
-  devices: new Map(), // userId -> [DeviceSource]
-  buffers: new Map(), // userId -> { power, hr, cadence }
-  chart: new Map(), // userId -> number[] (recent power)
-  colors: new Map(), // userId -> css color
+  cards: new Map(), // userId -> RiderCard
+  colors: new Map(),
+  devices: new Map(), // userId -> DeviceSource[] (paired in THIS browser)
+  latest: new Map(), // userId -> Map(deviceId -> { kind, fields:{power:{v,ts}} })
+  lastSent: new Map(),
+  applied: new Map(), // userId -> { key, ts } last trainer command sent
+  history: new Map(), // userId -> [[ts, power, hr]]
+  wakeLock: null,
 };
 
-const PALETTE = ['#4ec9b0', '#7ea6ff', '#e6a23c', '#f56c6c', '#d6336c', '#9b1fbf', '#c9d14e', '#37b5e6'];
+const support = bluetoothSupport();
 const ws = new WsClient();
 
-// ------------------------------- bootstrap ---------------------------------
 init();
 
 async function init() {
@@ -35,16 +44,30 @@ async function init() {
   wireSessionSetup();
   wireLiveControls();
 
-  ws.addEventListener('open', () => $('#wsStatus').classList.add('online'));
+  ws.addEventListener('open', () => {
+    $('#wsStatus').classList.add('online');
+    // After a reconnect the server has forgotten our device list: send it again.
+    for (const userId of state.devices.keys()) pushDevices(userId);
+  });
+  ws.addEventListener('close', () => $('#wsStatus').classList.remove('online'));
   ws.addEventListener('session', (e) => onSessionMessage(e.detail.session));
-  ws.addEventListener('live', (e) => onLiveMessage(e.detail));
+  ws.addEventListener('tick', (e) => onTick(e.detail));
+  ws.addEventListener('history', (e) => onHistory(e.detail));
   ws.addEventListener('sessionRemoved', () => refreshSessions());
 
-  await Promise.all([loadUsers(), loadProtocols()]);
-  await refreshSessions();
+  window.addEventListener('beforeunload', (e) => {
+    if (state.session?.state === 'running' && state.devices.size) e.preventDefault();
+  });
+  window.addEventListener('resize', () => {
+    fitRiders();
+    state.cards.forEach((c) => c.redraw());
+  });
+
+  configure(await api.settings());
+  applySetupDefaults();
+  await Promise.all([loadUsers(), refreshSessions()]);
   loadIntegrations();
   loadHistory();
-  tickTimer();
 }
 
 // --------------------------------- tabs ------------------------------------
@@ -56,6 +79,7 @@ function wireTabs() {
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${btn.dataset.view}`));
     if (btn.dataset.view === 'history') loadHistory();
     if (btn.dataset.view === 'integrations') loadIntegrations();
+    state.cards.forEach((c) => c.redraw());
   });
 }
 
@@ -63,7 +87,7 @@ function wireTabs() {
 function wireAthleteForm() {
   $('#saveAthleteBtn').addEventListener('click', saveAthlete);
   $('#cancelEditBtn').addEventListener('click', resetAthleteForm);
-  ['aFtp', 'aMaxHr'].forEach((id) => $(`#${id}`).addEventListener('input', renderAthleteZonesPreview));
+  ['aFtp', 'aMaxHr', 'aLthr'].forEach((id) => $(`#${id}`).addEventListener('input', renderAthleteZonesPreview));
 }
 
 async function loadUsers() {
@@ -81,7 +105,7 @@ function renderAthleteList() {
     li.innerHTML = `
       <div>
         <strong>${escapeHtml(u.name)}</strong>
-        <div class="hint">FTP ${u.ftp ?? '—'} W · Max HR ${u.maxHr ?? '—'}</div>
+        <div class="hint">FTP ${u.ftp ?? '—'} W · Max HR ${u.maxHr ?? '—'} · LTHR ${u.lthr ?? '—'}</div>
       </div>
       <div class="btn-row">
         <button class="btn" data-edit="${u.id}">Edit</button>
@@ -111,6 +135,7 @@ function editAthlete(id) {
   $('#aWeight').value = u.weightKg ?? '';
   $('#aFtp').value = u.ftp ?? '';
   $('#aMaxHr').value = u.maxHr ?? '';
+  $('#aLthr').value = u.lthr ?? '';
   $('#aRestHr').value = u.restingHr ?? '';
   $('#aEmail').value = u.email ?? '';
   $('#cancelEditBtn').classList.remove('hidden');
@@ -120,7 +145,7 @@ function editAthlete(id) {
 function resetAthleteForm() {
   state.editingUserId = null;
   $('#athleteFormTitle').textContent = 'New athlete';
-  ['athleteId', 'aName', 'aWeight', 'aFtp', 'aMaxHr', 'aRestHr', 'aEmail'].forEach((id) => ($(`#${id}`).value = ''));
+  ['athleteId', 'aName', 'aWeight', 'aFtp', 'aMaxHr', 'aLthr', 'aRestHr', 'aEmail'].forEach((id) => ($(`#${id}`).value = ''));
   $('#cancelEditBtn').classList.add('hidden');
   $('#athleteZones').innerHTML = '';
 }
@@ -131,6 +156,7 @@ async function saveAthlete() {
     weightKg: $('#aWeight').value,
     ftp: $('#aFtp').value,
     maxHr: $('#aMaxHr').value,
+    lthr: $('#aLthr').value,
     restingHr: $('#aRestHr').value,
     email: $('#aEmail').value.trim(),
   };
@@ -147,11 +173,15 @@ async function saveAthlete() {
 
 function renderAthleteZonesPreview() {
   const ftp = Number($('#aFtp').value);
-  const maxHr = Number($('#aMaxHr').value);
+  const maxHr = Number($('#aMaxHr').value) || null;
+  const anchor = resolveLthr({ lthr: Number($('#aLthr').value) || null, maxHr });
   const box = $('#athleteZones');
   box.innerHTML = '';
-  if (ftp) box.appendChild(zoneBlock('Power zones', POWER_ZONES, (z) => zoneRange(z, ftp, 'W')));
-  if (maxHr) box.appendChild(zoneBlock('Heart-rate zones', HR_ZONES, (z) => zoneRange(z, maxHr, 'bpm')));
+  if (ftp) box.appendChild(zoneBlock('Power zones', powerZones(ftp), (z) => (z.hi === null ? `${z.lo}+ W` : `${z.lo}–${z.hi} W`)));
+  if (anchor.lthr) {
+    const title = `Heart-rate zones (LTHR ${anchor.lthr}${anchor.estimated ? ', estimated' : ''})`;
+    box.appendChild(zoneBlock(title, hrZones(anchor.lthr, maxHr), (z) => (z.hi === null ? `${z.lo}+ bpm` : `${z.lo}–${z.hi} bpm`)));
+  }
 }
 
 function zoneBlock(title, zones, fmt) {
@@ -160,37 +190,46 @@ function zoneBlock(title, zones, fmt) {
   for (const z of zones) {
     const row = document.createElement('div');
     row.className = 'zone-line';
-    row.style.background = hexA(z.color, 0.15);
+    row.style.background = hexA(z.color, 0.22);
+    row.style.borderLeft = `5px solid ${z.color}`;
     row.innerHTML = `<span>Z${z.zone} ${z.name}</span><span>${fmt(z)}</span>`;
     wrap.appendChild(row);
   }
   return wrap;
 }
 
-function zoneRange(z, anchor, unit) {
-  const lo = Math.round(z.min * anchor);
-  const hi = z.max === Infinity ? '∞' : Math.round(z.max * anchor);
-  return `${lo}–${hi} ${unit}`;
-}
-
 // ---------------------------- session setup --------------------------------
-async function loadProtocols() {
-  state.protocols = await api.protocols();
-  const sel = $('#sessProtocol');
-  sel.innerHTML = state.protocols.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
-  sel.onchange = updateProtocolHint;
-  updateProtocolHint();
+function applySetupDefaults() {
+  const t = getSettings().test;
+  $('#tWarmup').value = t.warmupMinutes;
+  $('#tEffort').value = t.effortMinutes;
+  $('#tEffort').min = t.minEffortMinutes;
+  $('#tEffort').max = t.maxEffortMinutes;
+  $('#tCooldown').value = t.cooldownMinutes;
+  $('#tPercent').value = t.effortPercentFtp;
+  updateFactorHint();
 }
 
-function updateProtocolHint() {
-  const p = state.protocols.find((x) => x.id === $('#sessProtocol').value);
-  $('#protocolHint').textContent = p ? p.description : '';
+function updateFactorHint() {
+  const t = getSettings().test;
+  const min = Math.min(t.maxEffortMinutes, Math.max(t.minEffortMinutes, Number($('#tEffort').value) || t.effortMinutes));
+  const f = ftpFactor(min);
+  $('#factorHint').innerHTML = `A ${min}-minute effort uses adjustment factor <strong>× ${Number(f.toFixed(3))}</strong> (FTP = average power × ${Number(f.toFixed(3))}).`;
 }
 
 function wireSessionSetup() {
+  $('#tEffort').addEventListener('input', updateFactorHint);
   $('#createSessionBtn').addEventListener('click', async () => {
     try {
-      const s = await api.createSession({ name: $('#sessName').value.trim() || 'FTP Test', protocol: $('#sessProtocol').value });
+      const s = await api.createSession({
+        name: $('#sessName').value.trim() || 'FTP Test',
+        test: {
+          warmupMinutes: $('#tWarmup').value,
+          effortMinutes: $('#tEffort').value,
+          cooldownMinutes: $('#tCooldown').value,
+          effortPercentFtp: $('#tPercent').value,
+        },
+      });
       enterSession(s);
       refreshSessions();
     } catch (err) {
@@ -208,7 +247,7 @@ async function refreshSessions() {
     const li = document.createElement('li');
     li.innerHTML = `
       <div><strong>${escapeHtml(s.name)}</strong>
-        <div class="hint">${s.protocol} · ${s.participants.length} athlete(s) · ${s.state}</div>
+        <div class="hint">${s.test.effortMinutes}-min effort · ${s.participants.length} athlete(s) · ${s.state}</div>
       </div>
       <button class="btn" data-open="${s.id}">Open</button>`;
     ul.appendChild(li);
@@ -221,37 +260,91 @@ async function refreshSessions() {
 
 // --------------------------- live session view -----------------------------
 function wireLiveControls() {
-  $('#startBtn').addEventListener('click', () => api.startSession(state.session.id).catch((e) => toast(e.message, true)));
-  $('#finishBtn').addEventListener('click', () => api.finishSession(state.session.id).catch((e) => toast(e.message, true)));
-  $('#leaveSessionBtn').addEventListener('click', exitSession);
+  $('#startAllBtn').addEventListener('click', () => startSession(0));
+  $('#startStaggerBtn').addEventListener('click', () => startSession(Math.max(0, Number($('#staggerSec').value) || 0)));
+  $('#finishBtn').addEventListener('click', async () => {
+    if (!confirm('Finish the session now? Riders still going are stopped and their results calculated.')) return;
+    await api.finishSession(state.session.id).catch((e) => toast(e.message, true));
+  });
+  $('#leaveSessionBtn').addEventListener('click', () => {
+    if (state.session?.state === 'running' && !confirm('The test is still running. Closing disconnects the devices paired in this browser. Close anyway?')) return;
+    exitSession();
+  });
   $('#addParticipant').addEventListener('change', async (e) => {
     const userId = e.target.value;
     e.target.value = '';
     if (!userId) return;
+    if (state.session.participants.length >= 6) toast('More than 6 riders may overload the screen and Bluetooth links', true);
     await api.joinSession(state.session.id, userId).catch((err) => toast(err.message, true));
   });
 }
 
+// Start every ready rider together (stagger 0) or one after the other, in card order.
+async function startSession(staggerSeconds) {
+  const s = state.session;
+  const ready = s.participants.filter((p) => p.state === 'ready');
+  if (!ready.length) return toast('No riders are ready to start', true);
+  if (!confirmStart(ready)) return;
+  try {
+    await api.startSession(s.id, { staggerSeconds, userIds: ready.map((p) => p.userId) });
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// Soft sanity check before starting: no devices / no FTP for %-based resistance.
+function confirmStart(riders) {
+  const warnings = [];
+  for (const p of riders) {
+    const connected = p.devices.filter((d) => d.status === 'connected');
+    if (!connected.length) warnings.push(`${p.name}: no connected device`);
+    else if (!connected.some((d) => d.controllable)) warnings.push(`${p.name}: no controllable trainer — resistance can't be set automatically`);
+    if (p.control.mode === 'percent' && !p.ftp) warnings.push(`${p.name}: no FTP on file for % resistance`);
+  }
+  return !warnings.length || confirm(`Start anyway?\n\n• ${warnings.join('\n• ')}`);
+}
+
 function enterSession(session) {
   state.session = session;
+  state.history.clear();
   ws.subscribe(session.id);
   $('#sessionSetup').classList.add('hidden');
   $('#sessionLive').classList.remove('hidden');
+  $('#staggerSec').value = session.test.staggerSeconds;
+  const banner = $('#btBanner');
+  banner.classList.toggle('hidden', support.supported);
+  banner.textContent = support.reason;
+  requestWakeLock();
   renderParticipantPicker();
   renderSession();
 }
 
 function exitSession() {
-  // Tear down any active device connections.
   for (const list of state.devices.values()) list.forEach((d) => d.disconnect());
-  state.devices.clear();
-  state.buffers.clear();
-  state.chart.clear();
+  for (const m of [state.devices, state.latest, state.lastSent, state.applied, state.history, state.cards]) m.clear();
+  $('#riders').replaceChildren();
   state.session = null;
+  releaseWakeLock();
   $('#sessionLive').classList.add('hidden');
   $('#sessionSetup').classList.remove('hidden');
   refreshSessions();
 }
+
+// A phone/laptop that falls asleep drops Bluetooth links, so keep the screen on.
+async function requestWakeLock() {
+  try {
+    state.wakeLock = await navigator.wakeLock?.request('screen');
+  } catch {
+    /* not supported or denied: harmless */
+  }
+}
+function releaseWakeLock() {
+  state.wakeLock?.release().catch(() => {});
+  state.wakeLock = null;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.session) requestWakeLock();
+});
 
 function onSessionMessage(session) {
   if (!state.session || session.id !== state.session.id) {
@@ -275,253 +368,284 @@ function renderSession() {
   const s = state.session;
   if (!s) return;
   $('#liveName').textContent = s.name;
-  $('#liveProtocol').textContent = s.protocol;
   const stateEl = $('#liveState');
   stateEl.textContent = s.state;
   stateEl.className = `pill state ${s.state}`;
-  $('#startBtn').disabled = s.state === 'running';
-  $('#finishBtn').disabled = s.state !== 'running';
+  const t = s.test;
+  $('#livePlan').textContent = `${t.warmupMinutes}′ warm-up · ${t.effortMinutes}′ effort (×${t.ftpFactor}) · ${t.cooldownMinutes}′ cool-down`;
+  const count = (st) => s.participants.filter((p) => p.state === st).length;
+  $('#liveCounts').textContent = `${count('ready')} ready · ${count('scheduled')} scheduled · ${count('running')} running · ${count('finished')} finished`;
 
-  assignColors();
-  renderParticipants();
-  renderLeaderboard();
+  const finished = s.state === 'finished';
+  $('#startAllBtn').disabled = finished || !count('ready');
+  $('#startStaggerBtn').disabled = finished || !count('ready');
+  $('#finishBtn').disabled = finished || (!count('running') && !count('scheduled'));
+  $('#addParticipant').disabled = finished;
+
+  syncCards();
   renderParticipantPicker();
 
-  if (s.state === 'finished') renderResults();
-  else $('#results').classList.add('hidden');
-}
-
-function assignColors() {
-  state.session.participants.forEach((p, i) => {
-    if (!state.colors.has(p.userId)) state.colors.set(p.userId, PALETTE[i % PALETTE.length]);
-  });
-}
-
-function renderParticipants() {
-  const wrap = $('#participants');
-  wrap.innerHTML = '';
-  for (const p of state.session.participants) {
-    const color = state.colors.get(p.userId);
-    const pz = powerZoneFor(p.live.power, p.ftp);
-    const fb = state.session.state === 'running' ? feedback(p.live.power, p.ftp) : { text: '', tone: 'neutral' };
-    const card = document.createElement('div');
-    card.className = `participant ${p.deviceStatus === 'connected' ? 'connected' : ''}`;
-    card.style.borderLeftColor = color;
-    card.innerHTML = `
-      <h3><span>${escapeHtml(p.name)}</span><span class="dot ${p.deviceStatus === 'connected' ? 'on' : ''}"></span></h3>
-      <div class="metrics">
-        <div class="metric"><div class="val">${p.live.power || 0}</div><div class="unit">watts</div></div>
-        <div class="metric"><div class="val">${p.live.hr || 0}</div><div class="unit">bpm</div></div>
-        <div class="metric"><div class="val">${p.live.cadence || 0}</div><div class="unit">rpm</div></div>
-      </div>
-      ${pz ? `<span class="zone-badge" style="background:${pz.color}">Z${pz.zone} ${pz.name}</span>` : ''}
-      <div class="feedback ${fb.tone}">${fb.text}</div>
-      <div class="dev-buttons">
-        <button class="btn" data-power="${p.userId}">🔗 Power</button>
-        <button class="btn" data-hr="${p.userId}">❤ HR</button>
-        <button class="btn ghost" data-sim="${p.userId}">▶ Demo</button>
-        <button class="btn danger" data-remove="${p.userId}">Remove</button>
-      </div>`;
-    wrap.appendChild(card);
+  const box = $('#results');
+  if (finished) {
+    box.classList.remove('hidden');
+    box.innerHTML = renderReport({ id: s.id, name: s.name, finishedAt: s.finishedAt, test: s.test, riders: s.participants });
+  } else {
+    box.classList.add('hidden');
   }
-  wrap.onclick = onParticipantAction;
 }
 
-async function onParticipantAction(e) {
-  const power = e.target.closest('[data-power]');
-  const hr = e.target.closest('[data-hr]');
-  const sim = e.target.closest('[data-sim]');
-  const remove = e.target.closest('[data-remove]');
-  try {
-    if (power) await connectDevice(power.dataset.power, new PowerMeter());
-    if (hr) await connectDevice(hr.dataset.hr, new HeartRateMonitor());
-    if (sim) await connectDevice(sim.dataset.sim, new SimulatedTrainer(guessBasePower(sim.dataset.sim)));
-    if (remove) {
-      disconnectUser(remove.dataset.remove);
-      await api.leaveSession(state.session.id, remove.dataset.remove);
+// One long-lived card per rider, updated in place.
+function syncCards() {
+  const s = state.session;
+  const wrap = $('#riders');
+  const ids = new Set(s.participants.map((p) => p.userId));
+  for (const [id, card] of state.cards) {
+    if (!ids.has(id)) {
+      card.el.remove();
+      state.cards.delete(id);
     }
+  }
+  s.participants.forEach((p, i) => {
+    let card = state.cards.get(p.userId);
+    if (!card) {
+      if (!state.colors.has(p.userId)) state.colors.set(p.userId, PALETTE[state.colors.size % PALETTE.length]);
+      card = new RiderCard(p, state.colors.get(p.userId), cardContext());
+      state.cards.set(p.userId, card);
+      wrap.appendChild(card.el);
+    }
+    if (wrap.children[i] !== card.el) wrap.insertBefore(card.el, wrap.children[i] || null);
+    card.update(p, s);
+  });
+  wrap.dataset.count = s.participants.length;
+  fitRiders();
+  $('#noRiders').classList.toggle('hidden', s.participants.length > 0);
+  requestAnimationFrame(() => state.cards.forEach((c) => c.redraw()));
+}
+
+// Rider grid fills exactly the space below the session header (any screen size).
+function fitRiders() {
+  const wrap = $('#riders');
+  const top = wrap.getBoundingClientRect().top + window.scrollY;
+  wrap.style.setProperty('--riders-h', `${Math.max(0, window.innerHeight - top - 16)}px`);
+}
+
+function cardContext() {
+  return {
+    support,
+    history: (userId) => state.history.get(userId) || [],
+    isLocal: (devId) => [...state.devices.values()].some((list) => list.some((d) => d.id === devId)),
+    pair: (userId, kind) => pairDevice(userId, kind),
+    demo: (userId) => pairDevice(userId, 'sim'),
+    deviceAction: (userId, devId, action) => deviceAction(userId, devId, action),
+    setControl: (userId, patch) => api.setControl(state.session.id, userId, patch).catch((e) => toast(e.message, true)),
+    startRider: async (userId) => {
+      const p = state.session.participants.find((x) => x.userId === userId);
+      if (p && !confirmStart([p])) return;
+      api.startRider(state.session.id, userId).catch((e) => toast(e.message, true));
+    },
+    stopRider: (userId) => {
+      if (confirm('Stop this rider now? Their result is calculated from what has been recorded.')) {
+        api.stopRider(state.session.id, userId).catch((e) => toast(e.message, true));
+      }
+    },
+    remove: async (userId) => {
+      disconnectUser(userId);
+      await api.leaveSession(state.session.id, userId);
+    },
+  };
+}
+
+// ------------------------------ devices ------------------------------------
+const SOURCES = { trainer: () => new SmartTrainer(), power: () => new PowerMeter(), hr: () => new HeartRateMonitor() };
+
+// NOTE: must stay synchronous up to source.pair() — Web Bluetooth only opens its
+// device chooser while the click's user activation is still valid.
+async function pairDevice(userId, kind) {
+  const p = state.session.participants.find((x) => x.userId === userId);
+  const source = kind === 'sim' ? new SimulatedTrainer(p?.ftp || 220) : SOURCES[kind]();
+  if (kind !== 'sim' && !support.supported) return toast(support.reason, true);
+
+  source.acceptDevice = (device) => {
+    for (const [uid, list] of state.devices) {
+      const dup = list.find((d) => d.bluetoothId === device.id);
+      if (dup) return `${device.name || 'That device'} is already paired to ${nameOf(uid)}.`;
+    }
+    return '';
+  };
+
+  // The chip shows up immediately ("connecting…") because it is in the list from the start.
+  const sameRole = (d) => d.kind === source.kind || (d.kind === 'sim' && source.kind === 'trainer') || (d.kind === 'trainer' && source.kind === 'sim');
+  const prior = (state.devices.get(userId) || []).filter(sameRole);
+  const drop = (dev) => {
+    state.devices.set(userId, (state.devices.get(userId) || []).filter((d) => d !== dev));
+    state.latest.get(userId)?.delete(dev.id);
+  };
+  state.devices.set(userId, [...(state.devices.get(userId) || []), source]);
+  source.addEventListener('reading', (e) => onReading(userId, source, e.detail));
+  source.addEventListener('status', () => onDeviceStatus(userId, source));
+
+  try {
+    await source.pair();
   } catch (err) {
-    toast(err.message, true);
+    if (err.message !== 'Pairing cancelled') toast(err.message, true);
+    if (source.status !== 'failed') {
+      drop(source); // nothing to keep: chooser cancelled or device vetoed
+      return pushDevices(userId);
+    }
+    // 'failed' keeps its chip so the rider can hit Retry without re-pairing.
+  }
+
+  // One device per role: a successful new pairing replaces the previous one.
+  if (source.connected) {
+    for (const old of prior) {
+      drop(old);
+      old.disconnect();
+    }
+    toast(`${source.name} connected`);
+  }
+  pushDevices(userId);
+}
+
+function deviceAction(userId, devId, action) {
+  const list = state.devices.get(userId) || [];
+  const dev = list.find((d) => d.id === devId);
+  if (!dev) return;
+  if (action === 'retry') {
+    dev.reconnect?.().catch((err) => toast(err.message, true));
+  } else {
+    dev.disconnect();
+    state.devices.set(userId, list.filter((d) => d !== dev));
+    state.latest.get(userId)?.delete(devId);
+    pushDevices(userId);
   }
 }
 
-function guessBasePower(userId) {
-  const p = state.session.participants.find((x) => x.userId === userId);
-  return p?.ftp ? Math.round(p.ftp * 1.02) : 220;
-}
-
-// Wire a device source to a participant: merge its readings and stream up.
-async function connectDevice(userId, source) {
-  await source.connect();
-  if (!state.devices.has(userId)) state.devices.set(userId, []);
-  state.devices.get(userId).push(source);
-
-  source.addEventListener('reading', (e) => {
-    const buf = state.buffers.get(userId) || { power: 0, hr: 0, cadence: 0 };
-    Object.assign(buf, e.detail);
-    state.buffers.set(userId, buf);
-    ws.telemetry(state.session.id, userId, buf);
-  });
-  source.addEventListener('status', (e) => {
-    ws.deviceStatus(state.session.id, userId, e.detail.connected ? 'connected' : 'disconnected');
-  });
-  ws.deviceStatus(state.session.id, userId, 'connected');
-  toast(`${source.name} connected`);
+function onDeviceStatus(userId, source) {
+  if (source.connected && source.controllable) state.applied.delete(userId); // re-send the command to a (re)connected trainer
+  if (source.status === 'reconnecting' && source._announced !== 'reconnecting') toast(`${source.name}: connection dropped, reconnecting…`, true);
+  source._announced = source.status;
+  pushDevices(userId);
 }
 
 function disconnectUser(userId) {
   (state.devices.get(userId) || []).forEach((d) => d.disconnect());
-  state.devices.delete(userId);
-  state.buffers.delete(userId);
+  for (const m of [state.devices, state.latest, state.lastSent, state.applied]) m.delete(userId);
 }
 
-// Live telemetry from any client (including our own echoes).
-function onLiveMessage({ userId, live }) {
-  const p = state.session?.participants.find((x) => x.userId === userId);
-  if (p) p.live = live;
-  // Chart history buffer.
-  if (!state.chart.has(userId)) state.chart.set(userId, []);
-  const arr = state.chart.get(userId);
-  arr.push(live.power || 0);
-  if (arr.length > 300) arr.shift();
-  updateLiveCards();
-  drawChart();
+function pushDevices(userId) {
+  if (!state.session) return;
+  const list = (state.devices.get(userId) || []).map((d) => d.describe());
+  ws.devices(state.session.id, userId, list);
 }
 
-// Lightweight in-place refresh of the metric numbers without full re-render.
-function updateLiveCards() {
-  for (const p of state.session?.participants || []) {
-    const card = $(`.participant [data-power="${p.userId}"]`)?.closest('.participant');
-    if (!card) continue;
-    const vals = card.querySelectorAll('.metric .val');
-    vals[0].textContent = p.live.power || 0;
-    vals[1].textContent = p.live.hr || 0;
-    vals[2].textContent = p.live.cadence || 0;
-    const pz = powerZoneFor(p.live.power, p.ftp);
-    const badge = card.querySelector('.zone-badge');
-    if (pz && badge) {
-      badge.style.background = pz.color;
-      badge.textContent = `Z${pz.zone} ${pz.name}`;
-    }
-    const fbEl = card.querySelector('.feedback');
-    if (fbEl && state.session.state === 'running') {
-      const fb = feedback(p.live.power, p.ftp);
-      fbEl.textContent = fb.text;
-      fbEl.className = `feedback ${fb.tone}`;
+// Merge readings from several devices into one reading per rider: power meter
+// beats trainer power, a heart-rate strap beats anything else for HR.
+const PRIORITY = { power: ['power', 'trainer', 'sim'], cadence: ['power', 'trainer', 'sim'], hr: ['hr', 'trainer', 'sim'] };
+const FRESH_MS = 3000;
+
+function onReading(userId, source, reading) {
+  const now = Date.now();
+  let perDevice = state.latest.get(userId);
+  if (!perDevice) state.latest.set(userId, (perDevice = new Map()));
+  let entry = perDevice.get(source.id);
+  if (!entry) perDevice.set(source.id, (entry = { kind: source.kind, fields: {} }));
+  for (const [k, v] of Object.entries(reading)) entry.fields[k] = { v, ts: now };
+
+  if (now - (state.lastSent.get(userId) || 0) < SEND_EVERY_MS) return;
+  state.lastSent.set(userId, now);
+
+  const merged = {};
+  for (const [field, order] of Object.entries(PRIORITY)) {
+    for (const kind of order) {
+      const hit = [...perDevice.values()].find((d) => d.kind === kind && d.fields[field] && now - d.fields[field].ts < FRESH_MS);
+      if (hit) {
+        merged[field] = hit.fields[field].v;
+        break;
+      }
     }
   }
-  renderLeaderboard();
+  if (Object.keys(merged).length) ws.telemetry(state.session.id, userId, merged);
 }
 
-function renderLeaderboard() {
-  const wrap = $('#leaderboard');
-  if (!wrap) return;
-  const ranked = [...(state.session?.participants || [])].sort((a, b) => (b.live.power || 0) - (a.live.power || 0));
-  const max = Math.max(1, ...ranked.map((p) => p.live.power || 0));
-  wrap.innerHTML = ranked
-    .map((p, i) => {
-      const color = state.colors.get(p.userId);
-      const wkg = p.ftp ? '' : '';
-      return `<div class="lb-row">
-        <span class="lb-rank">${i + 1}</span>
-        <div><strong>${escapeHtml(p.name)}</strong>
-          <div class="lb-bar" style="width:${((p.live.power || 0) / max) * 100}%;background:${color}"></div>
-        </div>
-        <span>${p.live.power || 0} W</span>
-        <span class="hint">${p.live.hr || 0} bpm ${wkg}</span>
-      </div>`;
-    })
-    .join('');
+// --------------------------- ticks & trainer control -------------------------
+function onHistory({ sessionId, riders }) {
+  if (sessionId !== state.session?.id) return;
+  for (const [userId, points] of Object.entries(riders || {})) state.history.set(userId, points);
+  state.cards.forEach((c) => c.redraw());
 }
 
-// ------------------------------- chart -------------------------------------
-function drawChart() {
-  const canvas = $('#powerChart');
-  if (!canvas || !state.session) return;
-  const ctx = canvas.getContext('2d');
-  const w = (canvas.width = canvas.clientWidth * devicePixelRatio);
-  const h = (canvas.height = 220 * devicePixelRatio);
-  ctx.clearRect(0, 0, w, h);
-
-  const series = state.session.participants.map((p) => ({
-    color: state.colors.get(p.userId),
-    data: state.chart.get(p.userId) || [],
-  }));
-  const maxPower = Math.max(150, ...series.flatMap((s) => s.data));
-  const pad = 8 * devicePixelRatio;
-
-  // FTP reference lines.
-  ctx.strokeStyle = 'rgba(38, 50, 65, 0.08)';
-  ctx.lineWidth = 1;
-  for (let g = 0; g <= 4; g++) {
-    const y = pad + ((h - 2 * pad) * g) / 4;
-    ctx.beginPath();
-    ctx.moveTo(pad, y);
-    ctx.lineTo(w - pad, y);
-    ctx.stroke();
-  }
-
-  for (const s of series) {
-    if (s.data.length < 2) continue;
-    ctx.strokeStyle = s.color;
-    ctx.lineWidth = 2 * devicePixelRatio;
-    ctx.beginPath();
-    s.data.forEach((v, i) => {
-      const x = pad + ((w - 2 * pad) * i) / Math.max(1, s.data.length - 1);
-      const y = h - pad - ((h - 2 * pad) * v) / maxPower;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
-    ctx.stroke();
+function onTick({ sessionId, ts, riders }) {
+  if (sessionId !== state.session?.id) return;
+  const windowMs = getSettings().history.windowSeconds * 1000;
+  for (const r of riders) {
+    let h = state.history.get(r.userId);
+    if (!h) state.history.set(r.userId, (h = []));
+    h.push([ts, r.power, r.hr]);
+    while (h.length && h[0][0] < ts - windowMs) h.shift();
+    state.cards.get(r.userId)?.applyTick(r);
+    syncControl(r);
   }
 }
 
-// ------------------------------- results -----------------------------------
-function renderResults() {
-  const box = $('#results');
-  box.classList.remove('hidden');
-  const rows = state.session.participants
-    .filter((p) => p.result)
-    .sort((a, b) => b.result.estimatedFtp - a.result.estimatedFtp)
-    .map(
-      (p) => `<tr>
-        <td>${escapeHtml(p.name)}</td>
-        <td class="ftp-cell">${p.result.estimatedFtp} W</td>
-        <td>${p.result.avgPower} W</td>
-        <td>${p.result.normalizedPower} W</td>
-        <td>${p.result.maxPower} W</td>
-        <td>${p.result.avgHr || '—'}</td>
-        <td>${p.result.maxHr || '—'}</td>
-        <td>${fmtDuration(p.result.durationSec)}</td>
-      </tr>`,
-    )
-    .join('');
-  $('#resultsBody').innerHTML = `
-    <table>
-      <thead><tr><th>Athlete</th><th>New FTP</th><th>Avg</th><th>NP</th><th>Max</th><th>Avg HR</th><th>Max HR</th><th>Time</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="8" class="hint">No data captured.</td></tr>'}</tbody>
-    </table>`;
+// Forward the server's command (free ride / ERG watts) to this browser's trainer.
+function syncControl(r) {
+  const trainers = (state.devices.get(r.userId) || []).filter((d) => d.controllable && d.connected);
+  if (!trainers.length) return;
+  const key = JSON.stringify(r.control);
+  const last = state.applied.get(r.userId);
+  // Don't poke an idle trainer with "free ride" before anything has happened.
+  if (!last && r.control.mode === 'free' && r.state !== 'running') {
+    state.applied.set(r.userId, { key, ts: Date.now() });
+    return;
+  }
+  if (last && last.key === key && Date.now() - last.ts < CONTROL_REFRESH_MS) return;
+  state.applied.set(r.userId, { key, ts: Date.now() });
+  trainers.forEach((d) => d.applyControl(r.control).catch(() => {})); // failures show up on the device chip
 }
 
 // ------------------------------- history -----------------------------------
 async function loadHistory() {
-  const hist = await api.history();
+  const hist = await api.tests();
   const body = $('#historyBody');
   if (!hist.length) {
     body.innerHTML = '<p class="hint">No completed tests yet.</p>';
     return;
   }
-  body.innerHTML = hist
-    .map(
-      (h) => `
-      <h3>${escapeHtml(h.name)} <span class="hint">— ${h.protocol} · ${new Date(h.finishedAt).toLocaleString()}</span></h3>
-      <table>
-        <thead><tr><th>Athlete</th><th>FTP</th><th>Avg</th><th>NP</th><th>Max HR</th></tr></thead>
-        <tbody>${h.results
-          .map((r) => `<tr><td>${escapeHtml(r.name)}</td><td class="ftp-cell">${r.estimatedFtp} W</td><td>${r.avgPower} W</td><td>${r.normalizedPower} W</td><td>${r.maxHr || '—'}</td></tr>`)
-          .join('')}</tbody>
-      </table>`,
-    )
-    .join('<hr style="border-color:var(--line)">');
+  body.innerHTML = `<table>
+    <thead><tr><th>Test</th><th>Date</th><th>Effort</th><th>Riders (new FTP)</th><th></th></tr></thead>
+    <tbody>${hist
+      .map(
+        (h) => `<tr>
+        <td><strong>${escapeHtml(h.name)}</strong></td>
+        <td>${new Date(h.finishedAt).toLocaleString()}</td>
+        <td>${h.test ? `${h.test.effortMinutes} min · × ${h.test.ftpFactor}` : '—'}</td>
+        <td>${h.results.map((r) => `${escapeHtml(r.name)} <span class="ftp-cell">${r.estimatedFtp} W</span>`).join(' · ')}</td>
+        <td class="btn-row">${h.test ? `<button class="btn" data-report="${h.sessionId}">Report</button>` : ''}<button class="btn danger" data-delete="${h.sessionId}">✕</button></td>
+      </tr>`,
+      )
+      .join('')}</tbody></table>`;
+  body.onclick = async (e) => {
+    const open = e.target.closest('[data-report]');
+    const del = e.target.closest('[data-delete]');
+    if (open) showReport(open.dataset.report);
+    if (del && confirm('Delete this test and its recorded data?')) {
+      await api.deleteTest(del.dataset.delete).catch((err) => toast(err.message, true));
+      $('#historyReport').classList.add('hidden');
+      loadHistory();
+    }
+  };
+}
+
+async function showReport(id) {
+  try {
+    const record = await api.test(id);
+    const box = $('#historyReport');
+    box.innerHTML = renderReport(record);
+    box.classList.remove('hidden');
+    box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    toast(err.message, true);
+  }
 }
 
 // ----------------------------- integrations --------------------------------
@@ -529,13 +653,7 @@ async function loadIntegrations() {
   const status = await api.integrationStatus();
   $('#integrations').innerHTML = `
     ${integrationCard('Strava', status.strava.configured, '/api/integrations/strava/connect')}
-    ${integrationCard('TrainingPeaks', status.trainingpeaks.configured, '/api/integrations/trainingpeaks/connect')}
-    <div class="integration">
-      <h3>Export TCX</h3>
-      <p class="hint">Download the current session as a standard file any platform can import.</p>
-      <button class="btn" id="exportTcx">Download TCX</button>
-    </div>`;
-  $('#exportTcx')?.addEventListener('click', exportTcx);
+    ${integrationCard('TrainingPeaks', status.trainingpeaks.configured, '/api/integrations/trainingpeaks/connect')}`;
 }
 
 function integrationCard(name, configured, connectUrl) {
@@ -546,37 +664,9 @@ function integrationCard(name, configured, connectUrl) {
   </div>`;
 }
 
-// Build a TCX client-side from the current participants' chart buffers is not
-// enough (we only keep power); instead request nothing extra and export the
-// leader's live buffer as a simple example the platforms accept.
-function exportTcx() {
-  if (!state.session) return toast('Open a session first', true);
-  const p = state.session.participants[0];
-  if (!p) return toast('No athletes in session', true);
-  const samples = (state.chart.get(p.userId) || []).map((power, i) => ({ t: i * 1000, power }));
-  const tcx = buildTcx(state.session.name, samples);
-  const blob = new Blob([tcx], { type: 'application/xml' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `${state.session.name.replace(/\s+/g, '_')}.tcx`;
-  a.click();
-}
-
-function buildTcx(name, samples) {
-  const start = new Date().toISOString();
-  const pts = samples
-    .map((s) => `<Trackpoint><Time>${new Date(Date.now() + s.t).toISOString()}</Time><Extensions><ns3:TPX><ns3:Watts>${Math.round(s.power)}</ns3:Watts></ns3:TPX></Extensions></Trackpoint>`)
-    .join('');
-  return `<?xml version="1.0" encoding="UTF-8"?><TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2" xmlns:ns3="http://www.garmin.com/xmlschemas/ActivityExtension/v2"><Activities><Activity Sport="Biking"><Id>${start}</Id><Lap StartTime="${start}"><Track>${pts}</Track></Lap><Notes>${name}</Notes></Activity></Activities></TrainingCenterDatabase>`;
-}
-
 // ------------------------------- helpers -----------------------------------
-function tickTimer() {
-  const el = $('#liveTimer');
-  if (el && state.session?.state === 'running' && state.session.startedAt) {
-    el.textContent = fmtDuration((Date.now() - state.session.startedAt) / 1000);
-  }
-  requestAnimationFrame(() => setTimeout(tickTimer, 250));
+function nameOf(userId) {
+  return state.session?.participants.find((p) => p.userId === userId)?.name || 'another rider';
 }
 
 function toast(msg, isError = false) {
@@ -585,14 +675,9 @@ function toast(msg, isError = false) {
   el.classList.toggle('error', isError);
   el.classList.add('show');
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => el.classList.remove('show'), 2600);
+  toast._t = setTimeout(() => el.classList.remove('show'), isError ? 5000 : 2600);
 }
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-function hexA(hex, a) {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }

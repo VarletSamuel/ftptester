@@ -7,12 +7,13 @@
 //
 // Client -> server messages:
 //   { type:'subscribe', sessionId }
-//   { type:'telemetry', sessionId, userId, power, hr, cadence }
-//   { type:'deviceStatus', sessionId, userId, status }
+//   { type:'telemetry', sessionId, userId, power, hr, cadence }   raw reading
+//   { type:'devices', sessionId, userId, devices:[{id,kind,name,status,controllable}] }
 //
 // Server -> client messages:
-//   { type:'session', session }      full session snapshot
-//   { type:'live', sessionId, userId, live }
+//   { type:'session', session }        full session snapshot (state, devices, results)
+//   { type:'tick', sessionId, ts, riders:[...] }   1 Hz: smoothed values, phase, trainer command
+//   { type:'history', sessionId, riders:{userId:[[ts,power,hr]...]} }  recent smoothed history
 //   { type:'sessionRemoved', id }
 // ---------------------------------------------------------------------------
 
@@ -34,8 +35,7 @@ export function attachWebSocket(server) {
 
   // Relay session-manager events to subscribed clients.
   sessions.on('session:updated', (s) => broadcast(s.id, { type: 'session', session: s }));
-  sessions.on('session:started', (s) => broadcast(s.id, { type: 'session', session: s }));
-  sessions.on('session:finished', (s) => broadcast(s.id, { type: 'session', session: s }));
+  sessions.on('session:tick', (t) => broadcast(t.sessionId, { type: 'tick', ...t }));
   sessions.on('session:created', (s) => broadcast(null, { type: 'session', session: s }));
   sessions.on('session:removed', ({ id }) => broadcast(null, { type: 'sessionRemoved', id }));
 
@@ -50,7 +50,7 @@ export function attachWebSocket(server) {
       } catch {
         return;
       }
-      handleMessage(ws, msg, broadcast);
+      handleMessage(ws, msg);
     });
   });
 
@@ -70,31 +70,23 @@ export function attachWebSocket(server) {
   return wss;
 }
 
-function handleMessage(ws, msg, broadcast) {
+function handleMessage(ws, msg) {
   switch (msg.type) {
     case 'subscribe': {
       ws.sessionId = msg.sessionId;
       const s = sessions.get(msg.sessionId);
-      if (s) ws.send(JSON.stringify({ type: 'session', session: publicSession(s) }));
-      break;
-    }
-    case 'telemetry': {
-      const update = sessions.ingest(msg.sessionId, msg.userId, msg);
-      if (update) {
-        broadcast(msg.sessionId, {
-          type: 'live',
-          sessionId: msg.sessionId,
-          userId: msg.userId,
-          live: update.live,
-          state: update.state,
-        });
+      if (s) {
+        ws.send(JSON.stringify({ type: 'session', session: publicSession(s) }));
+        ws.send(JSON.stringify({ type: 'history', sessionId: s.id, riders: sessions.history(s.id) }));
       }
       break;
     }
-    case 'deviceStatus': {
-      sessions.setDeviceStatus(msg.sessionId, msg.userId, msg.status);
+    case 'telemetry':
+      sessions.ingest(msg.sessionId, msg.userId, msg);
       break;
-    }
+    case 'devices':
+      sessions.setDevices(msg.sessionId, msg.userId, msg.devices);
+      break;
     default:
       break;
   }

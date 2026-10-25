@@ -12,6 +12,7 @@
     />
     <link rel="icon" href="/assets/nlt-logo.png" />
     <link rel="stylesheet" href="/css/styles.css" />
+    <link rel="stylesheet" href="/css/session.css" />
   </head>
   <body>
     <header class="topbar">
@@ -36,12 +37,19 @@
       <section class="view active" id="view-session">
         <div class="session-setup" id="sessionSetup">
           <div class="card">
-            <h2>Start a test session</h2>
+            <h2>New FTP test</h2>
+            <label>Session name<input id="sessName" placeholder="Tuesday threshold" /></label>
             <div class="form-row">
-              <label>Session name<input id="sessName" placeholder="Tuesday threshold" /></label>
-              <label>Protocol<select id="sessProtocol"></select></label>
+              <label>Warm-up, free ride (min)<input id="tWarmup" type="number" min="0" max="60" step="1" /></label>
+              <label>Cool-down, free ride (min)<input id="tCooldown" type="number" min="0" max="60" step="1" /></label>
             </div>
-            <p class="hint" id="protocolHint"></p>
+            <div class="form-row">
+              <label>FTP effort duration (min)<input id="tEffort" type="number" step="1" list="effortPresets" /></label>
+              <label>Effort resistance (% of FTP)<input id="tPercent" type="number" min="30" max="150" step="1" /></label>
+            </div>
+            <datalist id="effortPresets"><option value="8"><option value="10"><option value="12"><option value="15"><option value="20"><option value="30"><option value="45"><option value="60"></datalist>
+            <p class="factor-note" id="factorHint"></p>
+            <p class="hint">Plan: free-ride warm-up, then the trainer holds the effort resistance (adjustable per rider), then a free-ride cool-down.</p>
             <button class="btn primary" id="createSessionBtn">Create session</button>
           </div>
 
@@ -52,33 +60,30 @@
         </div>
 
         <div class="session-live hidden" id="sessionLive">
-          <div class="session-head">
-            <div>
+          <div class="banner hidden" id="btBanner" role="alert"></div>
+          <div class="session-head card">
+            <div class="sh-info">
               <h2 id="liveName">Session</h2>
-              <span class="pill" id="liveProtocol"></span>
               <span class="pill state" id="liveState"></span>
-              <span class="timer" id="liveTimer">0:00</span>
+              <span class="pill" id="livePlan"></span>
+              <span class="hint" id="liveCounts"></span>
             </div>
             <div class="session-actions">
               <select id="addParticipant"><option value="">+ Add athlete…</option></select>
-              <button class="btn" id="startBtn">Start test</button>
-              <button class="btn danger" id="finishBtn" disabled>Finish</button>
+              <button class="btn primary" id="startAllBtn" title="Every ready rider starts at the same moment">▶ Start all together</button>
+              <span class="stagger">
+                <button class="btn" id="startStaggerBtn" title="Riders start one after the other, in card order">▶ Staggered</button>
+                <label class="inline">every <input id="staggerSec" type="number" min="0" max="600" step="5" /> s</label>
+              </span>
+              <button class="btn danger" id="finishBtn">Finish session</button>
               <button class="btn ghost" id="leaveSessionBtn">Close</button>
             </div>
           </div>
 
-          <div class="leaderboard" id="leaderboard"></div>
-          <div class="participants" id="participants"></div>
+          <div class="riders" id="riders"></div>
+          <p class="hint empty-riders hidden" id="noRiders">Add athletes to the session (up to 6 riders train at the same time).</p>
 
-          <div class="card chart-card">
-            <h3>Live power</h3>
-            <canvas id="powerChart" height="220"></canvas>
-          </div>
-
-          <div class="results hidden" id="results">
-            <h2>Results</h2>
-            <div id="resultsBody"></div>
-          </div>
+          <div class="results hidden" id="results"></div>
         </div>
       </section>
 
@@ -95,7 +100,11 @@
             </div>
             <div class="form-row">
               <label>Max HR<input id="aMaxHr" type="number" min="0" /></label>
+              <label>LTHR (threshold HR)<input id="aLthr" type="number" min="0" placeholder="from test" /></label>
+            </div>
+            <div class="form-row">
               <label>Resting HR<input id="aRestHr" type="number" min="0" /></label>
+              <span></span>
             </div>
             <label>Email<input id="aEmail" type="email" placeholder="optional" /></label>
             <div class="btn-row">
@@ -117,13 +126,14 @@
           <h2>Past tests</h2>
           <div id="historyBody"></div>
         </div>
+        <div class="card hidden" id="historyReport"></div>
       </section>
 
       <!-- ========================== INTEGRATIONS ========================= -->
       <section class="view" id="view-integrations">
         <div class="card">
           <h2>Share &amp; sync</h2>
-          <p class="hint">Connect a platform to push finished tests, or export a standard TCX file that any app can import.</p>
+          <p class="hint">Connect a platform to push finished tests. TCX / GPX files (per rider) and the Excel summary are downloaded from each test's report under <strong>History</strong>.</p>
           <div class="integrations" id="integrations"></div>
         </div>
       </section>

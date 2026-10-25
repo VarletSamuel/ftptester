@@ -1,0 +1,33 @@
+{
+  "smoothing": {
+    "windowSeconds": 3,
+    "staleAfterSeconds": 5
+  },
+  "history": {
+    "windowSeconds": 300
+  },
+  "test": {
+    "warmupMinutes": 10,
+    "effortMinutes": 20,
+    "cooldownMinutes": 5,
+    "effortPercentFtp": 90,
+    "minEffortMinutes": 8,
+    "maxEffortMinutes": 60,
+    "staggerSeconds": 30,
+    "minCompletionForProfileUpdate": 0.9
+  },
+  "ftpFactors": [
+    [8, 0.90],
+    [10, 0.92],
+    [12, 0.93],
+    [15, 0.94],
+    [20, 0.95],
+    [30, 0.97],
+    [45, 0.99],
+    [60, 1.00]
+  ],
+  "heartRate": {
+    "lthrFractionOfMax": 0.9,
+    "zoneBoundsPctLthr": [0.68, 0.83, 0.94, 1.05, 1.1, 1.15]
+  }
+}

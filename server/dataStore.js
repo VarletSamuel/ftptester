@@ -2,8 +2,8 @@
 // Persistence (Phase 4 storage layer)
 // ---------------------------------------------------------------------------
 // A tiny JSON-file-backed store. Users are persisted to disk; sessions are
-// kept in memory (they are live events) but their finished results are also
-// written to disk so history survives restarts. This keeps the app runnable
+// kept in memory (they are live events) but finished tests (summary + the
+// per-rider 1 Hz samples used for TCX/GPX/Excel export) are written to disk. This keeps the app runnable
 // with zero external dependencies while presenting a clean async API that
 // could later be swapped for a real database.
 // ---------------------------------------------------------------------------
@@ -14,6 +14,8 @@ import { DATA_DIR } from './config.js';
 
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+const TESTS_DIR = path.join(DATA_DIR, 'tests');
+const testFile = (id) => path.join(TESTS_DIR, `${String(id).replace(/[^\w-]/g, '')}.json`);
 
 async function readJson(file, fallback) {
   try {
@@ -77,6 +79,24 @@ class DataStore {
     this.history = this.history.slice(0, 500); // keep it bounded
     await writeJson(HISTORY_FILE, this.history);
     return entry;
+  }
+
+  // --- full test records (summary + 1 Hz samples per rider) ----------------
+  async saveTest(record) {
+    await writeJson(testFile(record.id), record);
+    return record;
+  }
+
+  getTest(id) {
+    return readJson(testFile(id), null);
+  }
+
+  async deleteTest(id) {
+    const before = this.history.length;
+    this.history = this.history.filter((h) => h.sessionId !== id);
+    await writeJson(HISTORY_FILE, this.history);
+    await fs.rm(testFile(id), { force: true });
+    return this.history.length < before;
   }
 }
 

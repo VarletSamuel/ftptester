@@ -1,13 +1,10 @@
 import { Router } from 'express';
 import { sessions, publicSession } from '../sessionManager.js';
 import { store } from '../dataStore.js';
-import { PROTOCOLS } from '../metrics.js';
 
 export const sessionsRouter = Router();
 
-sessionsRouter.get('/protocols', (req, res) => {
-  res.json(Object.values(PROTOCOLS));
-});
+const fail = (res, err) => res.status(err.status || 500).json({ error: err.message });
 
 sessionsRouter.get('/history', (req, res) => {
   res.json(store.listHistory());
@@ -35,20 +32,22 @@ sessionsRouter.post('/:id/join', (req, res) => {
     sessions.join(req.params.id, user);
     res.json(publicSession(sessions.get(req.params.id)));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    fail(res, err);
   }
 });
 
 sessionsRouter.post('/:id/leave', (req, res) => {
   sessions.leave(req.params.id, req.body?.userId);
-  res.json(publicSession(sessions.get(req.params.id)) || { ok: true });
+  const s = sessions.get(req.params.id);
+  res.json(s ? publicSession(s) : { ok: true });
 });
 
+// Start every ready rider together, or staggered: { staggerSeconds, userIds? }.
 sessionsRouter.post('/:id/start', (req, res) => {
   try {
-    res.json(publicSession(sessions.start(req.params.id)));
+    res.json(publicSession(sessions.start(req.params.id, req.body || {})));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    fail(res, err);
   }
 });
 
@@ -56,7 +55,36 @@ sessionsRouter.post('/:id/finish', async (req, res) => {
   try {
     res.json(publicSession(await sessions.finish(req.params.id)));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    fail(res, err);
+  }
+});
+
+// Per-rider controls: start (optionally delayed), stop, and resistance setting.
+sessionsRouter.post('/:id/riders/:userId/start', (req, res) => {
+  try {
+    sessions.startRider(req.params.id, req.params.userId, req.body?.delaySeconds);
+    res.json(publicSession(sessions.get(req.params.id)));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+sessionsRouter.post('/:id/riders/:userId/stop', async (req, res) => {
+  try {
+    await sessions.stopRider(req.params.id, req.params.userId);
+    res.json(publicSession(sessions.get(req.params.id)));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// { mode: 'percent'|'watts', percent?, watts? } — effort-phase resistance.
+sessionsRouter.put('/:id/riders/:userId/control', (req, res) => {
+  try {
+    sessions.setControl(req.params.id, req.params.userId, req.body || {});
+    res.json(publicSession(sessions.get(req.params.id)));
+  } catch (err) {
+    fail(res, err);
   }
 });
 

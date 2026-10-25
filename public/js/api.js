@@ -4,30 +4,38 @@ const json = (res) => {
   return res.status === 204 ? null : res.json();
 };
 
+const send = (method, url, body) =>
+  fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }).then(json);
+
 export const api = {
+  settings: () => fetch('/api/settings').then(json),
+
   // users
   listUsers: () => fetch('/api/users').then(json),
-  createUser: (data) => fetch('/api/users', { method: 'POST', headers: h(), body: JSON.stringify(data) }).then(json),
-  updateUser: (id, data) => fetch(`/api/users/${id}`, { method: 'PUT', headers: h(), body: JSON.stringify(data) }).then(json),
-  deleteUser: (id) => fetch(`/api/users/${id}`, { method: 'DELETE' }).then(json),
-  userZones: (id) => fetch(`/api/users/${id}/zones`).then(json),
+  createUser: (data) => send('POST', '/api/users', data),
+  updateUser: (id, data) => send('PUT', `/api/users/${id}`, data),
+  deleteUser: (id) => send('DELETE', `/api/users/${id}`),
 
   // sessions
-  protocols: () => fetch('/api/sessions/protocols').then(json),
   listSessions: () => fetch('/api/sessions').then(json),
   getSession: (id) => fetch(`/api/sessions/${id}`).then(json),
-  createSession: (data) => fetch('/api/sessions', { method: 'POST', headers: h(), body: JSON.stringify(data) }).then(json),
-  joinSession: (id, userId) => fetch(`/api/sessions/${id}/join`, { method: 'POST', headers: h(), body: JSON.stringify({ userId }) }).then(json),
-  leaveSession: (id, userId) => fetch(`/api/sessions/${id}/leave`, { method: 'POST', headers: h(), body: JSON.stringify({ userId }) }).then(json),
-  startSession: (id) => fetch(`/api/sessions/${id}/start`, { method: 'POST' }).then(json),
-  finishSession: (id) => fetch(`/api/sessions/${id}/finish`, { method: 'POST' }).then(json),
-  deleteSession: (id) => fetch(`/api/sessions/${id}`, { method: 'DELETE' }).then(json),
-  history: () => fetch('/api/sessions/history').then(json),
+  createSession: (data) => send('POST', '/api/sessions', data),
+  joinSession: (id, userId) => send('POST', `/api/sessions/${id}/join`, { userId }),
+  leaveSession: (id, userId) => send('POST', `/api/sessions/${id}/leave`, { userId }),
+  startSession: (id, body = {}) => send('POST', `/api/sessions/${id}/start`, body),
+  finishSession: (id) => send('POST', `/api/sessions/${id}/finish`, {}),
+  deleteSession: (id) => send('DELETE', `/api/sessions/${id}`),
+  startRider: (id, userId, delaySeconds = 0) => send('POST', `/api/sessions/${id}/riders/${userId}/start`, { delaySeconds }),
+  stopRider: (id, userId) => send('POST', `/api/sessions/${id}/riders/${userId}/stop`, {}),
+  setControl: (id, userId, control) => send('PUT', `/api/sessions/${id}/riders/${userId}/control`, control),
+
+  // stored tests
+  tests: () => fetch('/api/tests').then(json),
+  test: (id) => fetch(`/api/tests/${id}`).then(json),
+  deleteTest: (id) => send('DELETE', `/api/tests/${id}`),
+  exportUrl: (id, file) => `/api/tests/${id}/export/${file}`,
+  excelUrl: (id) => `/api/tests/${id}/export.xlsx`,
 
   // integrations
   integrationStatus: () => fetch('/api/integrations/status').then(json),
 };
-
-function h() {
-  return { 'Content-Type': 'application/json' };
-}

@@ -11,3 +11,24 @@ Please desgin an user interface first.
 In a second phase, draft a data model to keep track of participants an their performance metrics.
 Write the middleware to conect frontend with backend and communicate with the devices. 
 Finally, implement the backend to handle data storage, user management, and integration with external platforms.
+
+#Fine tuning after test 25/10/2026
+The pairing with devices needs to be more stable and user friendly. It works in Edge for now, but firefox doesn't seem to support it.
+We performed the test via bluetooth, not yet over ANT+.
+
+On the interface, make it clear which devices are connected for each rider.
+Next to the paired device, I want the power and heart rate to be displayed in the athlete view.
+Discard the general graph with all riders combined and focus on individual views. Don't show the real-time values but take a 3-second average.
+Make sure that the average interval is configurable in a config file on the backend.
+
+Next to a 5min historical view per rider, show gauge charts with the current power / hearrate zones.
+
+When the views are finalised, focus on the control part, where we want to control the resistance of the trainer.
+During our tests today, there was no resistance from the trainer. Cadence went through the roof without outputting the required wattages.
+I suggest to start the test with a warmup phase (free ride), then a with a 90% of the current FTP for the 20min effort and finaly a cooldown (free ride).
+The resistance must be settable in either %of the riders ftp or absolute wattage for each rider individual. Use a toggle button to set the choice.
+Allow to set the ftp test duration and use the matching adjustment factor that for the reduced test time. Show that factor in the test report.
+The test report must be per rider and show a table with the 7 power training zones. Also calculate the matching heart rate zones. Use color scales to make the zones visual.
+
+The app needs to support 6 riders simultaneously so make sure they can start at the same time, or staggered if needed.
+Keep track of performed test (wattage & heart rate per rider) and make them exportable in TCX/GPX format, with aggregation/result in excel format

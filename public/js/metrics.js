@@ -1,4 +1,5 @@
-// Client-side zone maths (mirrors server/metrics.js) for live feedback.
+// Client-side zone maths (mirrors server/metrics.js). The tunable parts (HR zone
+// bounds, LTHR fallback, FTP factors) come from the backend's config/settings.json.
 export const POWER_ZONES = [
   { zone: 1, name: 'Active Recovery', min: 0, max: 0.55, color: '#7ea6ff' },
   { zone: 2, name: 'Endurance', min: 0.55, max: 0.75, color: '#4ec9b0' },
@@ -9,40 +10,69 @@ export const POWER_ZONES = [
   { zone: 7, name: 'Neuromuscular', min: 1.5, max: Infinity, color: '#9b1fbf' },
 ];
 
-export const HR_ZONES = [
-  { zone: 1, name: 'Recovery', min: 0, max: 0.6, color: '#7ea6ff' },
-  { zone: 2, name: 'Aerobic', min: 0.6, max: 0.7, color: '#4ec9b0' },
-  { zone: 3, name: 'Tempo', min: 0.7, max: 0.8, color: '#c9d14e' },
-  { zone: 4, name: 'Threshold', min: 0.8, max: 0.9, color: '#e6a23c' },
-  { zone: 5, name: 'Maximal', min: 0.9, max: Infinity, color: '#f56c6c' },
-];
+let settings = {
+  heartRate: { lthrFractionOfMax: 0.9, zoneBoundsPctLthr: [0.68, 0.83, 0.94, 1.05, 1.1, 1.15] },
+  ftpFactors: [[8, 0.9], [20, 0.95], [60, 1]],
+  history: { windowSeconds: 300 },
+  test: {},
+};
 
-export function powerZoneFor(power, ftp) {
-  if (!ftp || !power) return null;
-  const frac = power / ftp;
-  return POWER_ZONES.find((z) => frac >= z.min && frac < z.max) || POWER_ZONES.at(-1);
+export const configure = (s) => (settings = s);
+export const getSettings = () => settings;
+
+export function ftpFactor(minutes) {
+  const t = [...settings.ftpFactors].sort((a, b) => a[0] - b[0]);
+  if (minutes <= t[0][0]) return t[0][1];
+  if (minutes >= t.at(-1)[0]) return t.at(-1)[1];
+  for (let i = 1; i < t.length; i++) {
+    if (minutes <= t[i][0]) return t[i - 1][1] + ((t[i][1] - t[i - 1][1]) * (minutes - t[i - 1][0])) / (t[i][0] - t[i - 1][0]);
+  }
+  return 1;
 }
 
-export function hrZoneFor(hr, maxHr) {
-  if (!maxHr || !hr) return null;
-  const frac = hr / maxHr;
-  return HR_ZONES.find((z) => frac >= z.min && frac < z.max) || HR_ZONES.at(-1);
+export function resolveLthr({ lthr, maxHr }) {
+  if (lthr) return { lthr: Math.round(lthr), estimated: false };
+  if (maxHr) return { lthr: Math.round(maxHr * settings.heartRate.lthrFractionOfMax), estimated: true };
+  return { lthr: null, estimated: false };
 }
 
-// Live coaching feedback comparing current power to a target band around FTP.
-// During an FTP test the athlete should hold just below threshold and steady.
-export function feedback(power, ftp) {
-  if (!ftp || !power) return { text: 'Hold steady', tone: 'neutral' };
-  const frac = power / ftp;
-  if (frac > 1.15) return { text: 'Too hot — ease off', tone: 'high' };
-  if (frac > 1.05) return { text: 'Above threshold', tone: 'high' };
-  if (frac >= 0.95) return { text: 'On target', tone: 'good' };
-  if (frac >= 0.85) return { text: 'Push a little more', tone: 'low' };
-  return { text: 'Pick it up', tone: 'low' };
+// 7 power zones with watt ranges.
+export function powerZones(ftp) {
+  if (!ftp) return [];
+  return POWER_ZONES.map((z) => ({
+    ...z,
+    lo: Math.round(z.min * ftp),
+    hi: z.max === Infinity ? null : Math.round(z.max * ftp),
+  }));
+}
+
+// 7 heart-rate zones matching the power zones, anchored on LTHR and capped at max HR.
+export function hrZones(lthr, maxHr) {
+  if (!lthr) return [];
+  const b = settings.heartRate.zoneBoundsPctLthr;
+  const cap = (v) => (maxHr ? Math.min(v, maxHr) : v);
+  return POWER_ZONES.map((z, i) => {
+    const min = i === 0 ? 0 : b[i - 1];
+    const max = i === POWER_ZONES.length - 1 ? Infinity : b[i];
+    return {
+      zone: z.zone,
+      name: z.name,
+      color: z.color,
+      min,
+      max,
+      lo: cap(Math.round(min * lthr)),
+      hi: max === Infinity ? maxHr || null : cap(Math.round(max * lthr)),
+    };
+  });
+}
+
+export function zoneOf(zones, value) {
+  if (!value || !zones.length) return null;
+  return zones.find((z) => value >= z.lo && (z.hi === null || value < z.hi)) || zones.at(-1);
 }
 
 export function fmtDuration(sec) {
+  sec = Math.max(0, Math.round(sec));
   const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(sec % 60).padStart(2, '0')}`;
 }

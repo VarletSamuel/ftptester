@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { store } from '../dataStore.js';
 import { createUser } from '../models.js';
-import { powerZones, hrZones } from '../metrics.js';
+import { powerZones, hrZones, resolveLthr } from '../metrics.js';
 
 export const usersRouter = Router();
 
@@ -19,7 +19,8 @@ usersRouter.get('/:id', (req, res) => {
 usersRouter.get('/:id/zones', (req, res) => {
   const user = store.getUser(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ power: powerZones(user.ftp), hr: hrZones(user.maxHr) });
+  const anchor = resolveLthr(user);
+  res.json({ power: powerZones(user.ftp), hr: hrZones(anchor.lthr, user.maxHr), lthr: anchor.lthr, lthrEstimated: anchor.estimated });
 });
 
 usersRouter.post('/', async (req, res) => {

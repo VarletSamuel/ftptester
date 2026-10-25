@@ -27,7 +27,10 @@ export class WsClient extends EventTarget {
         /* ignore */
       }
     };
-    this.ws.onclose = () => setTimeout(() => this._connect(), 1500);
+    this.ws.onclose = () => {
+      this.dispatchEvent(new Event('close'));
+      setTimeout(() => this._connect(), 1500);
+    };
   }
 
   send(obj) {
@@ -42,10 +45,11 @@ export class WsClient extends EventTarget {
   }
 
   telemetry(sessionId, userId, reading) {
-    this.send({ type: 'telemetry', sessionId, userId, ...reading });
+    // Raw readings are only useful live: drop them rather than queue while offline.
+    if (this.ws?.readyState === WebSocket.OPEN) this.send({ type: 'telemetry', sessionId, userId, ...reading });
   }
 
-  deviceStatus(sessionId, userId, status) {
-    this.send({ type: 'deviceStatus', sessionId, userId, status });
+  devices(sessionId, userId, devices) {
+    this.send({ type: 'devices', sessionId, userId, devices });
   }
 }
