@@ -31,7 +31,12 @@ export function renderReport(record) {
     </div>`;
 }
 
-function riderReport(record, r) {
+// Compact single-rider result, shown inside the rider's own card.
+export function renderRiderResult(record, r) {
+  return riderReport(record, r, true);
+}
+
+function riderReport(record, r, compact = false) {
   const x = r.result;
   const delta = x.ftpBefore ? x.estimatedFtp - x.ftpBefore : null;
   const maxShare = Math.max(0.0001, ...x.zones.map((z) => Math.max(z.powerPct, z.hrPct)));
@@ -54,9 +59,9 @@ function riderReport(record, r) {
 
   const fact = (label, value) => `<div class="fact"><span>${label}</span><strong>${value}</strong></div>`;
   return `
-    <section class="report-rider">
+    <section class="report-rider ${compact ? 'compact' : ''}">
       <div class="rr-head">
-        <h3>${esc(r.name)}</h3>
+        ${compact ? '' : `<h3>${esc(r.name)}</h3>`}
         <div class="rr-ftp"><span class="big">${x.estimatedFtp} W</span>
           ${delta !== null ? `<span class="delta ${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '+' : ''}${delta} W vs ${x.ftpBefore} W</span>` : ''}
         </div>

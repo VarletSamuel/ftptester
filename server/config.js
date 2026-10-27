@@ -7,7 +7,7 @@ import path from 'node:path';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const ROOT = path.resolve(__dirname, '..');
-export const DATA_DIR = path.join(ROOT, 'data');
+export const DATA_DIR = process.env.FTP_DATA_DIR ? path.resolve(process.env.FTP_DATA_DIR) : path.join(ROOT, 'data');
 export const PUBLIC_DIR = path.join(ROOT, 'public');
 export const SETTINGS_FILE = path.join(ROOT, 'config', 'settings.json');
 

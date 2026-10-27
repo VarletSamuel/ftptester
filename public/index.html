@@ -75,6 +75,7 @@
                 <button class="btn" id="startStaggerBtn" title="Riders start one after the other, in card order">▶ Staggered</button>
                 <label class="inline">every <input id="staggerSec" type="number" min="0" max="600" step="5" /> s</label>
               </span>
+              <a class="btn primary hidden" id="excelBtn" href="#" download>⬇ Excel (all riders)</a>
               <button class="btn danger" id="finishBtn">Finish session</button>
               <button class="btn ghost" id="leaveSessionBtn">Close</button>
             </div>
@@ -83,7 +84,6 @@
           <div class="riders" id="riders"></div>
           <p class="hint empty-riders hidden" id="noRiders">Add athletes to the session (up to 6 riders train at the same time).</p>
 
-          <div class="results hidden" id="results"></div>
         </div>
       </section>
 

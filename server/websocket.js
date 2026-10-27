@@ -42,6 +42,9 @@ export function attachWebSocket(server) {
   wss.on('connection', (ws) => {
     ws.isAlive = true;
     ws.on('pong', () => (ws.isAlive = true));
+    ws.on('close', () => {
+      for (const [sid, uid] of ws.ownedRiders?.values() ?? []) sessions.releaseDevices(sid, uid, ws);
+    });
 
     ws.on('message', (raw) => {
       let msg;
@@ -85,7 +88,8 @@ function handleMessage(ws, msg) {
       sessions.ingest(msg.sessionId, msg.userId, msg);
       break;
     case 'devices':
-      sessions.setDevices(msg.sessionId, msg.userId, msg.devices);
+      sessions.setDevices(msg.sessionId, msg.userId, msg.devices, ws);
+      (ws.ownedRiders ||= new Map()).set(`${msg.sessionId}:${msg.userId}`, [msg.sessionId, msg.userId]);
       break;
     default:
       break;

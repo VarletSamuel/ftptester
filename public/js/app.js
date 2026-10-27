@@ -385,13 +385,10 @@ function renderSession() {
   syncCards();
   renderParticipantPicker();
 
-  const box = $('#results');
-  if (finished) {
-    box.classList.remove('hidden');
-    box.innerHTML = renderReport({ id: s.id, name: s.name, finishedAt: s.finishedAt, test: s.test, riders: s.participants });
-  } else {
-    box.classList.add('hidden');
-  }
+  // Results live in each rider's card; the session header just offers the workbook.
+  const excel = $('#excelBtn');
+  excel.classList.toggle('hidden', !(finished && s.participants.some((p) => p.result)));
+  excel.href = api.excelUrl(s.id);
 }
 
 // One long-lived card per rider, updated in place.
@@ -434,8 +431,8 @@ function cardContext() {
     support,
     history: (userId) => state.history.get(userId) || [],
     isLocal: (devId) => [...state.devices.values()].some((list) => list.some((d) => d.id === devId)),
+    demoEnabled: new URLSearchParams(location.search).has('demo'), // developer aid: add ?demo to the URL
     pair: (userId, kind) => pairDevice(userId, kind),
-    demo: (userId) => pairDevice(userId, 'sim'),
     deviceAction: (userId, devId, action) => deviceAction(userId, devId, action),
     setControl: (userId, patch) => api.setControl(state.session.id, userId, patch).catch((e) => toast(e.message, true)),
     startRider: async (userId) => {
@@ -513,6 +510,7 @@ function deviceAction(userId, devId, action) {
   if (action === 'retry') {
     dev.reconnect?.().catch((err) => toast(err.message, true));
   } else {
+    if (!confirm(`Disconnect ${dev.name || 'this device'} from ${nameOf(userId)}?`)) return;
     dev.disconnect();
     state.devices.set(userId, list.filter((d) => d !== dev));
     state.latest.get(userId)?.delete(devId);

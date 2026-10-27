@@ -711,10 +711,7 @@ main:has(#sessionLive:not(.hidden)) {
 
 /* short screens (laptops): trade labels for chart room */
 @media (min-width: 900px) and (max-height: 860px) {
-  .legend,
-  .phase-text { display: none; }
-  .r-phase { gap: 0; }
-  .phase-row { justify-content: flex-end; }
+  .legend { display: none; }
   .rider { gap: 0.3rem; }
   .dev { padding-block: 0.15rem; }
   .ctrl-row .ctrl-target { font-size: 0.78rem; }
@@ -725,4 +722,136 @@ main:has(#sessionLive:not(.hidden)) {
   .brand .logo { height: 34px; }
   .tagline { display: none; }
   main:has(#sessionLive:not(.hidden)) { padding-block: 0.5rem; }
+}
+
+/* stage timers under the timeline */
+.stages {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+}
+.stage {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 6px;
+  border-bottom: 3px solid transparent;
+  background: var(--panel-2);
+  font-size: 0.74rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.stage b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+.stage[data-stage="warmup"] { border-bottom-color: #cfe6f5; }
+.stage[data-stage="effort"] { border-bottom-color: #f3b0a8; }
+.stage[data-stage="cooldown"] { border-bottom-color: #d3ead2; }
+.stage.active {
+  color: var(--text);
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--line);
+}
+.stage.active[data-stage="warmup"] { border-bottom-color: #1d8fc4; }
+.stage.active[data-stage="effort"] { border-bottom-color: #c43a2e; }
+.stage.active[data-stage="cooldown"] { border-bottom-color: #2e8a3d; }
+.stage.done b { color: #2e8a3d; }
+
+/* the two device blocks: power and heart rate */
+.r-devices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+}
+.dev-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.dev { flex: 0 0 auto; }
+.dev.clickable { cursor: pointer; }
+.dev.clickable:hover { border-color: var(--danger); background: #fff; }
+.dev.empty {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  border-style: dashed;
+  border-left-style: dashed;
+  background: transparent;
+  min-height: 44px;
+}
+.dev.empty .dev-main { flex: 1 1 110px; }
+.dev-pair {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+.dev-add { display: flex; }
+.btn.mini.primary { padding: 0.28rem 0.55rem; }
+@media (max-width: 899px) {
+  .r-devices { grid-template-columns: 1fr; }
+}
+
+/* ---- a finished rider's result replaces the live view inside the card ---- */
+.rider.show-result .r-phase,
+.rider.show-result .r-devices,
+.rider.show-result .r-viz,
+.rider.show-result .r-ctrl {
+  display: none;
+}
+.r-result {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.report-rider.compact {
+  margin: 0;
+  padding: 0;
+  border: none;
+  box-shadow: none;
+  background: none;
+}
+.compact .rr-ftp .big {
+  font-size: 1.5rem;
+}
+.compact .facts {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.3rem;
+  margin: 0.4rem 0;
+}
+.compact .fact {
+  padding: 0.2rem 0.45rem;
+}
+.compact .fact span {
+  font-size: 0.6rem;
+}
+.compact .fact strong {
+  font-size: 0.8rem;
+}
+.compact .zones-table th,
+.compact .zones-table td {
+  padding: 0.12rem 0.4rem;
+  font-size: 0.74rem;
+}
+.compact .share {
+  height: 16px;
+  min-width: 80px;
+}
+.compact .share span {
+  font-size: 0.66rem;
+  line-height: 16px;
+}
+@media (max-width: 1100px) {
+  .compact .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.compact .zones-table th,
+.compact .zones-table td {
+  white-space: nowrap;
 }

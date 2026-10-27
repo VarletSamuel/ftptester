@@ -72,9 +72,10 @@ class SessionManager extends EventEmitter {
   }
 
   // Devices are paired in a browser; it reports the full list for a rider.
-  setDevices(sessionId, userId, devices) {
+  setDevices(sessionId, userId, devices, owner = null) {
     const p = this.#participant(sessionId, userId);
     if (!p || !Array.isArray(devices)) return;
+    p.devicesOwner = owner;
     p.devices = devices.slice(0, 8).map((d) => ({
       id: String(d.id),
       kind: ['trainer', 'power', 'hr', 'sim'].includes(d.kind) ? d.kind : 'power',
@@ -83,6 +84,16 @@ class SessionManager extends EventEmitter {
       controllable: Boolean(d.controllable),
       detail: String(d.detail || '').slice(0, 60),
     }));
+    this.#updated(this.sessions.get(sessionId));
+  }
+
+  // The browser that reported a rider's devices went away (closed/reloaded the
+  // page): its Bluetooth links are gone, so stop showing them as connected.
+  releaseDevices(sessionId, userId, owner) {
+    const p = this.#participant(sessionId, userId);
+    if (!p || p.devicesOwner !== owner) return;
+    p.devices = [];
+    p.devicesOwner = null;
     this.#updated(this.sessions.get(sessionId));
   }
 
